@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using BlackBarLabs.Collections.Async;
 using BlackBarLabs.Persistence.Azure;
 using BlackBarLabs.Persistence.Azure.StorageTables;
+using BlackBarLabs.Core;
 
 namespace BlackBarLabs.Security.SessionServer.Persistence.Azure.Documents
 {
@@ -13,30 +14,36 @@ namespace BlackBarLabs.Security.SessionServer.Persistence.Azure.Documents
 
         public AuthorizationDocument() { }
 
-        internal IEnumerableAsync<ClaimDelegate> GetClaims(AzureStorageRepository repository)
+        internal async Task<Claim[]> GetClaims(AzureStorageRepository repository)
         {
-            return EnumerableAsync.YieldAsync<ClaimDelegate>(
-                async (yieldAsync) =>
-                {
-                    var claimDocumentIds = Claims.ToGuidsFromByteArray();
-                    foreach (var claimDocumentId in claimDocumentIds)
-                    {
-                        await await repository.FindByIdAsync(claimDocumentId,
-                            async (ClaimDocument claimsDoc) =>
-                            {
-                                Uri issuer;
-                                Uri.TryCreate(claimsDoc.Issuer, UriKind.RelativeOrAbsolute, out issuer);
-                                Uri type;
-                                Uri.TryCreate(claimsDoc.Type, UriKind.RelativeOrAbsolute, out type);
-                                await yieldAsync(claimsDoc.ClaimId, issuer, type, claimsDoc.Value);
-                            },
-                            async () =>
-                            {
-                                // TODO: Flag data inconsitency
-                                await Task.FromResult(true);
-                            });
-                    }
-                });
+            var claimDocumentIds = Claims.ToGuidsFromByteArray();
+            var claims = await claimDocumentIds
+                .Select(
+                     async (claimDocumentId) =>
+                     {
+                         return await repository.FindByIdAsync(claimDocumentId,
+                             (ClaimDocument claimsDoc) =>
+                             {
+                                 Uri issuer;
+                                 Uri.TryCreate(claimsDoc.Issuer, UriKind.RelativeOrAbsolute, out issuer);
+                                 Uri type;
+                                 Uri.TryCreate(claimsDoc.Type, UriKind.RelativeOrAbsolute, out type);
+                                 return new Claim
+                                 {
+                                     claimId = claimsDoc.ClaimId,
+                                     issuer = issuer,
+                                     type = type,
+                                     value = claimsDoc.Value,
+                                 };
+                             },
+                             () =>
+                             {
+                                 // TODO: Flag data inconsitency
+                                 return default(Claim?);
+                             });
+                     })
+                .WhenAllAsync();
+            return claims.Where(claim => claim.HasValue).Select(claim => claim.Value).ToArray();
         }
 
         #endregion

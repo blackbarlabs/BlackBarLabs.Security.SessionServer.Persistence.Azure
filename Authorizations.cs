@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using BlackBarLabs.Collections.Async;
 using BlackBarLabs.Persistence.Azure;
 using BlackBarLabs.Persistence.Azure.StorageTables;
+using BlackBarLabs.Core.Extensions;
 
 namespace BlackBarLabs.Security.SessionServer.Persistence.Azure
 {
@@ -29,22 +30,22 @@ namespace BlackBarLabs.Security.SessionServer.Persistence.Azure
         }
 
         public async Task<T> FindAuthId<T>(Uri providerId, string username,
-            Func<Guid, IEnumerableAsync<ClaimDelegate>, T> onSuccess, Func<T> onFailure)
+            Func<Guid, Claim[], T> onSuccess, Func<T> onFailure)
         {
             var authCheckId = GetRowKey(providerId, username);
             var result = await await repository.FindByIdAsync(authCheckId,
                 async (Documents.AuthorizationCheck document) =>
                 {
-                    return await repository.FindByIdAsync(document.AuthId,
-                        (Documents.AuthorizationDocument authorizationDocument) =>
+                    return await await repository.FindByIdAsync(document.AuthId,
+                        async (Documents.AuthorizationDocument authorizationDocument) =>
                         {
-                            var claims = authorizationDocument.GetClaims(repository);
+                            var claims = await authorizationDocument.GetClaims(repository);
                             return onSuccess(document.AuthId, claims);
                         },
                         () =>
                         {
                             // TODO: Log data inconsistency exception
-                            return onFailure();
+                            return onFailure().ToTask();
                         });
                 },
                 () => Task.FromResult(onFailure()));
@@ -54,12 +55,13 @@ namespace BlackBarLabs.Security.SessionServer.Persistence.Azure
         public async Task<bool> DoesMatchAsync(Guid authorizationId, Uri providerId, string username)
         {
             var md5Hash = GetRowKey(providerId, username);
-            var result = await repository.FindById<Documents.AuthorizationCheck>(md5Hash);
-            if (default(Documents.AuthorizationCheck) != result)
-            {
-                return result.AuthId == authorizationId;
-            }
-            return false;
+            var result = await repository.FindByIdAsync(md5Hash,
+                (Documents.AuthorizationCheck doc) =>
+                {
+                    return doc.AuthId == authorizationId;
+                },
+                () => false);
+            return result;
         }
 
         public Task<TResult> UpdateCredentialTokenAsync<TResult>(Guid authorizationId, Uri providerId, string username, Uri[] claimsProviders,
@@ -115,11 +117,6 @@ namespace BlackBarLabs.Security.SessionServer.Persistence.Azure
                 () => Task.FromResult(authorizationDoesNotExists()));
         }
 
-
-
-
-
-
         public async Task<TResult> UpdateClaims<TResult, TResultAdded>(Guid authorizationId,
             UpdateClaimsSuccessDelegateAsync<TResult, TResultAdded> onSuccess,
             Func<TResultAdded> addedSuccess,
@@ -130,7 +127,7 @@ namespace BlackBarLabs.Security.SessionServer.Persistence.Azure
             return await repository.UpdateAsync<Documents.AuthorizationDocument, TResult>(authorizationId,
                 async (authorizationDocument, save) =>
                 {
-                    var claims = authorizationDocument.GetClaims(repository);
+                    var claims = await authorizationDocument.GetClaims(repository);
                     var result = await onSuccess(claims,
                         async (claimId, issuer, type, value) =>
                         {
